@@ -1,0 +1,1 @@
+"""Auratic Core package root."""

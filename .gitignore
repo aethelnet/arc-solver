@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.log
+*.parquet
+*.json
+!kernel-metadata.json
+*.pth
+*.pt
+.DS_Store
+.idea/
+.vscode/
