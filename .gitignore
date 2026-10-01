@@ -14,3 +14,7 @@ env/
 .DS_Store
 .idea/
 .vscode/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
