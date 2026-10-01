@@ -318,6 +318,9 @@ class RealActiveInferenceSolver:
         state_name: str
     ) -> Tuple[int, Optional[Dict[str, Any]], str]:
         self.step_count += 1
+        grid = np.asarray(grid)
+        while grid.ndim > 2:
+            grid = grid[0]
 
         # 1. Level Transition Handler
         if levels_completed > self.current_level:

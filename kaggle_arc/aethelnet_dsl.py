@@ -284,6 +284,8 @@ def plan_bfs_path(
     sr, sc = start_pos
     tr, tc = target_pos
     s = stride
+    if solid_mask is None or not hasattr(solid_mask, "shape") or len(solid_mask.shape) != 2:
+        return []
     H, W = solid_mask.shape
     hazards = deadly_coords or set()
 
@@ -342,6 +344,8 @@ def plan_push_box(
     generating avatar navigation moves to the push pose behind the box for each push.
     """
     s = stride
+    if solid_mask is None or not hasattr(solid_mask, "shape") or len(solid_mask.shape) != 2:
+        return []
     H, W = solid_mask.shape
 
     # State: (box_r, box_c, avatar_r, avatar_c)
@@ -1023,7 +1027,7 @@ class AethelnetVault:
 
 
 def _to_lines(frame: Any) -> List[str]:
-    """Universal frame converter to list of ASCII lines."""
+    """Converts diverse state representations into list of strings representing 2D grid."""
     if frame is None:
         return []
     if isinstance(frame, np.ndarray):
@@ -1031,24 +1035,31 @@ def _to_lines(frame: Any) -> List[str]:
             return []
         while frame.ndim > 2:
             frame = frame[0]
+        if frame.ndim == 1:
+            return ["".join(f"{val:X}" if isinstance(val, (int, np.integer)) else str(val) for val in frame)]
         return ["".join(f"{val:X}" if isinstance(val, (int, np.integer)) else str(val) for val in row) for row in frame]
     if hasattr(frame, 'ascii') and isinstance(frame.ascii, str):
-        return frame.ascii.splitlines()
+        return [l for l in frame.ascii.splitlines() if l]
     if hasattr(frame, 'grid') and frame.grid is not None:
-        grid = np.asarray(frame.grid)
-        while grid.ndim > 2:
-            grid = grid[0]
-        return ["".join(f"{val:X}" if isinstance(val, (int, np.integer)) else str(val) for val in row) for row in grid]
+        return _to_lines(frame.grid)
     if isinstance(frame, list):
-        if frame and isinstance(frame[0], str):
+        if not frame:
+            return []
+        if isinstance(frame[0], str):
             return list(frame)
-        grid = np.asarray(frame)
-        while grid.ndim > 2:
-            grid = grid[0]
-        return ["".join(f"{val:X}" if isinstance(val, (int, np.integer)) else str(val) for val in row) for row in grid]
+        lines = []
+        for row in frame:
+            if isinstance(row, (list, tuple, np.ndarray)):
+                lines.append("".join(f"{val:X}" if isinstance(val, (int, np.integer)) else str(val) for val in row))
+            elif isinstance(row, str):
+                lines.append(row)
+            else:
+                lines.append(f"{row:X}" if isinstance(row, (int, np.integer)) else str(row))
+        return lines
     if isinstance(frame, str):
-        return frame.splitlines()
+        return [l for l in frame.splitlines() if l]
     return []
+
 
 
 def diff_frames(f1: Any, f2: Any) -> List[Tuple[int, int, str, str]]:
@@ -1383,10 +1394,21 @@ def is_corner_deadlock(
                 if (gr, gc) in goal_coords:
                     return False
 
+    mask = None
     if solid_mask is not None:
-        mask = solid_mask.copy()
-        H, W = mask.shape
-    else:
+        if isinstance(solid_mask, np.ndarray) and solid_mask.ndim == 2:
+            mask = solid_mask.copy()
+            H, W = mask.shape
+        else:
+            try:
+                sm = np.asarray(solid_mask, dtype=bool)
+                if sm.ndim == 2:
+                    mask = sm.copy()
+                    H, W = mask.shape
+            except Exception:
+                mask = None
+
+    if mask is None:
         lines = _to_lines(frame_or_grid)
         H = len(lines)
         W = len(lines[0]) if H > 0 else 0
@@ -1716,6 +1738,25 @@ class AethelnetMacroCompiler:
         W = len(lines[0]) if H > 0 else 0
         if H == 0 or W == 0:
             return MacroChainResult(False, [], [], "EmptyGrid", 0)
+
+        # 0. Defensive parameter resolution for solid_mask / available_actions
+        if isinstance(solid_mask, (list, tuple)) and solid_mask and not isinstance(solid_mask[0], (list, tuple, np.ndarray)):
+            if available_actions is None:
+                available_actions = list(solid_mask)
+            solid_mask = None
+
+        if solid_mask is not None:
+            if isinstance(solid_mask, np.ndarray) and solid_mask.ndim == 2 and solid_mask.shape == (H, W):
+                solid_mask = solid_mask.copy()
+            else:
+                try:
+                    sm = np.asarray(solid_mask, dtype=bool)
+                    if sm.ndim == 2 and sm.shape == (H, W):
+                        solid_mask = sm.copy()
+                    else:
+                        solid_mask = None
+                except Exception:
+                    solid_mask = None
 
         # 1. Resolve Avatar Position if not explicitly given
         if avatar_pos is None:

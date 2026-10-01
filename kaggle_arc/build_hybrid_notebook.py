@@ -228,14 +228,20 @@ def analyze_with_aethelnet(self, state_path, action_num, *args, **kwargs):
                     if act_name in ("NAVIGATE_TO", "GOTO", "PUSH", "PUSH_BOX", "ACTUATE", "ACTUATE_SWITCH", "INTERACT"):
                         try:
                             cf, _ = _rs_mod.load_runtime_state(pathlib.Path(state_path))
-                            grid = np.array(cf.grid) if cf and cf.grid else None
+                            grid = np.asarray(cf.grid, dtype=np.int32) if cf and cf.grid else None
                             if grid is not None:
+                                while grid.ndim > 2:
+                                    grid = grid[0]
                                 intent_name = "NAVIGATE_TO" if act_name in ("NAVIGATE_TO", "GOTO") else ("PUSH_BOX" if act_name in ("PUSH", "PUSH_BOX") else "ACTUATE_SWITCH")
                                 target = (act.get("row"), act.get("col")) if "row" in act and "col" in act else None
                                 direction = act.get("dir") or act.get("direction")
                                 intent = aethel.MacroIntent(name=intent_name, target=target, box_pos=target, direction=direction)
                                 valid_acts = getattr(self, "_current_valid_actions", ["ACTION1", "ACTION2", "ACTION3", "ACTION4"])
-                                macro_res = aethel.AethelnetMacroCompiler.compile_intent(intent, grid, valid_acts)
+                                macro_res = aethel.AethelnetMacroCompiler.compile_intent(
+                                    intent=intent,
+                                    frame_or_grid=grid,
+                                    available_actions=valid_acts
+                                )
                                 if macro_res.success and macro_res.actions:
                                     print(f"[AETHELNET MACRO COMPILER] Compiled {{act_name}} -> {{len(macro_res.actions)}} primitive actions: {{macro_res.action_names}}", flush=True)
                                     expanded_actions.extend(macro_res.actions)
@@ -271,7 +277,9 @@ def analyze_with_aethelnet(self, state_path, action_num, *args, **kwargs):
             # Load real runtime state from disk
             current_frame, history_entries = _rs_mod.load_runtime_state(pathlib.Path(state_path))
             if current_frame is not None and current_frame.grid:
-                grid_arr = np.array(current_frame.grid)
+                grid_arr = np.asarray(current_frame.grid, dtype=np.int32)
+                while grid_arr.ndim > 2:
+                    grid_arr = grid_arr[0]
 
                 # Determine legal actions
                 valid_actions = kwargs.get("valid_actions") or (args[0] if len(args) > 0 else None) or getattr(self, "_current_valid_actions", ["ACTION1", "ACTION2", "ACTION3", "ACTION4"])

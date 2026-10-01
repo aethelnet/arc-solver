@@ -136,3 +136,35 @@ def test_to_lines_3d_array():
     assert len(lines[0]) == 8
     assert lines[2][3] == '4'
 
+def test_macro_intent_positional_actions_resilience():
+    # Calling compile_intent positionally with available_actions in solid_mask slot
+    grid = np.zeros((10, 10), dtype=int)
+    intent = MacroIntent(name="NAVIGATE_TO", target=(8, 8))
+    res = AethelnetMacroCompiler.compile_intent(
+        intent,
+        grid,
+        ["ACTION1", "ACTION2", "ACTION3", "ACTION4"] # Passed in solid_mask position!
+    )
+    assert res.success is True
+    assert res.step_count > 0
+
+def test_macro_intent_push_box_positional_actions_resilience():
+    # Calling PUSH_BOX positionally with available_actions in solid_mask slot
+    grid = np.zeros((10, 10), dtype=int)
+    intent = MacroIntent(name="PUSH_BOX", box_pos=(4, 4), direction="RIGHT")
+    res = AethelnetMacroCompiler.compile_intent(
+        intent,
+        grid,
+        ["ACTION1", "ACTION2", "ACTION3", "ACTION4"] # Passed in solid_mask position!
+    )
+    assert res.success is True
+    assert res.step_count > 0
+
+def test_is_corner_deadlock_malformed_mask():
+    from kaggle_arc.aethelnet_dsl import is_corner_deadlock
+    grid = np.zeros((10, 10), dtype=int)
+    # Pass list of strings as solid_mask - must not raise AttributeError
+    is_dead = is_corner_deadlock(grid, (0, 0), solid_mask=["ACTION1", "ACTION2"])
+    assert isinstance(is_dead, bool)
+    assert is_dead is True # (0, 0) is top-left boundary corner
+
