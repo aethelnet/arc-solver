@@ -54,15 +54,15 @@ c14_src = c14_src.replace("bm.solver.max_actions_per_game = None", "bm.solver.ma
 
 stag_breaker_code = """
 
-# Adaptive Level Quota & Stagnation Breaker on _HarnessGameSession
+# Phase 354: Dynamic Adaptive Stagnation Breaker on _HarnessGameSession
 try:
     import sys
+    from collections import deque
     _solv_mod = sys.modules.get(bm.solver.__class__.__module__)
     _HGS = getattr(_solv_mod, "_HarnessGameSession", None) if _solv_mod else None
     if _HGS is not None:
         _orig_hgs_should_stop = getattr(_HGS, "should_stop", None)
         _orig_hgs_step_env = getattr(_HGS, "step_env", None)
-        MAX_ACTIONS_PER_UNSOLVED_LEVEL = 45
 
         if _orig_hgs_step_env is not None:
             def step_env_with_level_tracking(self, arguments):
@@ -76,14 +76,78 @@ try:
 
                     st = getattr(self, "_aethel_lvl_track", None)
                     if st is None:
-                        st = {"level": lvl, "actions": 0}
+                        st = {
+                            "level": lvl,
+                            "actions": 0,
+                            "consecutive_no_change": 0,
+                            "actions_since_last_progress": 0,
+                            "recent_signatures": deque(maxlen=20),
+                            "last_score": 0.0,
+                        }
                         self._aethel_lvl_track = st
 
+                    # New level entered: Reset level-scoped metrics
                     if lvl is not None and lvl != st["level"]:
                         st["level"] = lvl
                         st["actions"] = 0
+                        st["consecutive_no_change"] = 0
+                        st["actions_since_last_progress"] = 0
+                        st["recent_signatures"].clear()
+                        st["last_score"] = 0.0
 
-                    st["actions"] += 1
+                    # Count how many atomic actions were executed in this step
+                    n_acts = 1
+                    if isinstance(arguments, dict):
+                        acts_list = arguments.get("actions") or []
+                        if isinstance(acts_list, list) and len(acts_list) > 0:
+                            n_acts = len(acts_list)
+                    st["actions"] += n_acts
+
+                    # 1. Track Board Change (Deadlock Detection)
+                    board_changed = True
+                    if isinstance(payload, dict):
+                        if "board_changed_ex_hud" in payload:
+                            board_changed = bool(payload["board_changed_ex_hud"])
+                        elif "board_changed" in payload:
+                            board_changed = bool(payload["board_changed"])
+
+                    if not board_changed:
+                        st["consecutive_no_change"] += n_acts
+                    else:
+                        st["consecutive_no_change"] = 0
+
+                    # 2. Track Score / Reward Progress
+                    cur_score = 0.0
+                    if isinstance(payload, dict) and "score" in payload:
+                        cur_score = float(payload.get("score") or 0.0)
+                    elif hasattr(self, "game") and hasattr(self.game, "current_state"):
+                        cur_score = float(getattr(self.game.current_state, "score", 0.0) or 0.0)
+
+                    has_progress = False
+                    if cur_score > st.get("last_score", 0.0):
+                        st["last_score"] = cur_score
+                        has_progress = True
+
+                    # 3. Track Novelty via Board Grid Hash
+                    grid = None
+                    if isinstance(payload, dict) and "board" in payload:
+                        grid = payload["board"]
+                    elif hasattr(self, "game") and hasattr(self.game, "current_state"):
+                        grid = getattr(self.game.current_state, "grid", None)
+
+                    if grid:
+                        try:
+                            grid_sig = hash(tuple(tuple(r) for r in grid))
+                            if grid_sig not in st["recent_signatures"]:
+                                st["recent_signatures"].append(grid_sig)
+                                has_progress = True
+                        except Exception:
+                            pass
+
+                    if has_progress:
+                        st["actions_since_last_progress"] = 0
+                    else:
+                        st["actions_since_last_progress"] += n_acts
                 except Exception:
                     pass
                 return payload
@@ -94,15 +158,38 @@ try:
                 if _orig_hgs_should_stop(self):
                     return True
                 st = getattr(self, "_aethel_lvl_track", None)
-                if st and st.get("actions", 0) >= MAX_ACTIONS_PER_UNSOLVED_LEVEL:
-                    lvl = st.get("level", "?")
-                    print(f"[AETHELNET STAGNATION BREAKER] Level {lvl} reached {st['actions']} actions without solve -> Surrendering game cleanly to protect queue budget.", flush=True)
+                if not st:
+                    return False
+
+                lvl = st.get("level", "?")
+                actions = st.get("actions", 0)
+                no_change = st.get("consecutive_no_change", 0)
+                no_prog = st.get("actions_since_last_progress", 0)
+
+                # Gate 1: Wall-Hitting / Click Deadlock (16 consecutive actions with 0 board change)
+                if no_change >= 16:
+                    print(f"[AETHELNET STAGNATION BREAKER] Level {lvl}: DEADLOCK detected ({no_change} consecutive actions with 0 board change) -> Surrendering cleanly.", flush=True)
+                    return True
+
+                # Gate 2: Circular Oscillation / Loop Stagnation (30 actions without discovering new state or score)
+                if actions >= 40 and no_prog >= 30:
+                    print(f"[AETHELNET STAGNATION BREAKER] Level {lvl}: OSCILLATION detected ({no_prog} actions without new state or score) -> Surrendering cleanly.", flush=True)
+                    return True
+
+                # Gate 3: Dynamic Adaptive Cap
+                # Active progress (low no_change and steady discovery) gets up to 85 actions!
+                # Sluggish or uncertain progress is capped at 50 actions.
+                is_active = (no_change < 5 and no_prog < 15)
+                effective_cap = 85 if is_active else 50
+
+                if actions >= effective_cap:
+                    print(f"[AETHELNET STAGNATION BREAKER] Level {lvl}: Reached budget limit ({actions}/{effective_cap} actions, active={is_active}) -> Surrendering cleanly to protect queue budget.", flush=True)
                     return True
                 return False
             _HGS.should_stop = should_stop_with_stagnation
-            print("[+] AETHELNET Stagnation Breaker (45 actions/level quota) successfully installed on _HarnessGameSession.", flush=True)
+            print("[+] AETHELNET Dynamic Stagnation Breaker (Deadlock=16, Oscillation=30, ActiveCap=85) successfully installed on _HarnessGameSession.", flush=True)
 except Exception as _e_hgs:
-    print(f"[!] Warning: Stagnation breaker install error: {_e_hgs}", flush=True)
+    print(f"[!] Warning: Dynamic Stagnation Breaker install error: {_e_hgs}", flush=True)
 """
 nb['cells'][14]['source'] = c14_src + stag_breaker_code
 
@@ -364,13 +451,13 @@ if _orig_bup_aeth is not None:
             )
             injected_blocks.append(anti_loop_dir)
 
-            # Stagnation Alert if actions on level >= 20
+            # Stagnation Alert: Only trigger if truly stuck (no board change or long oscillation)
             session = getattr(self, "_session", None)
             st = getattr(session, "_aethel_lvl_track", None)
-            if st and st.get("actions", 0) >= 20:
+            if st and (st.get("consecutive_no_change", 0) >= 8 or st.get("actions_since_last_progress", 0) >= 20):
                 stag_alert = (
-                    f"[STAGNATION ALERT - LEVEL {{st.get('level', '?')}}]: You have taken {{st['actions']}} actions on this level without progressing. "
-                    "Your previous hypothesis is REFUTED. Do NOT repeat similar coordinates or click patterns. "
+                    f"[STAGNATION ALERT - LEVEL {{st.get('level', '?')}}]: You have taken {{st.get('actions_since_last_progress', 0)}} actions without board change or progress. "
+                    "Your current hypothesis appears ineffective. Do NOT repeat similar coordinates or click patterns. "
                     "You MUST test an entirely different object, interact with an unclicked area, or reverse your action direction now."
                 )
                 injected_blocks.append(stag_alert)
